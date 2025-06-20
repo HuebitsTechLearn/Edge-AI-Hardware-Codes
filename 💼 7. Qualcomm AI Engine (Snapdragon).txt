@@ -1,0 +1,82 @@
+⚙️ Step 1: Model Conversion (From TensorFlow to .dlc format)
+Before using the SDK on-device, you need to convert your model to DLC (Deep Learning Container), Qualcomm’s optimized format.
+
+CLI Command:
+
+bash
+Copy
+Edit
+snpe-tensorflow-to-dlc \
+    --input_network mobilenet_v2.pb \
+    --input_dim input:1,224,224,3 \
+    --output_path mobilenet_v2.dlc
+Want to use ONNX? No problem:
+
+bash
+Copy
+Edit
+snpe-onnx-to-dlc --input_network model.onnx --output_path model.dlc
+🧪 Step 2: C++ Code for Inference (Native NDK)
+Works inside an Android NDK project. Assume model.dlc is bundled in assets.
+
+🔧 Setup:
+Link against SNPE libs.
+
+Use DlContainer and SnpeFactory to load and run models.
+
+🧠 Inference Code (C++):
+cpp
+Copy
+Edit
+#include "SNPE/SNPE.hpp"
+#include "DlSystem/DlContainer.hpp"
+#include "DlSystem/String.hpp"
+#include "DlSystem/TensorShape.hpp"
+#include "DlSystem/ITensor.hpp"
+
+// Load model
+auto container = zdl::DlContainer::IDlContainer::open("mobilenet_v2.dlc");
+
+// Create SNPE object
+auto snpeBuilder = zdl::SNPE::SNPEBuilder(container.get());
+auto snpe = snpeBuilder.setRuntimeProcessor(zdl::DlSystem::Runtime_t::GPU)
+                       .build();
+
+// Create input tensor
+auto inputShape = zdl::DlSystem::TensorShape({1, 224, 224, 3});
+auto inputTensor = snpe->createUserBufferTensor(inputShape);
+
+// Fill inputTensor with preprocessed image data...
+
+// Run inference
+snpe->execute(inputTensor.get(), outputTensorMap);
+📱 Step 3: Java Wrapper (Calling from Android App)
+The SDK is C++ based, so you use JNI to wrap it. Here’s how to set up your Java-Android bridge.
+
+Java JNI Call:
+java
+Copy
+Edit
+public class SnpeNative {
+    static {
+        System.loadLibrary("snpe_native"); // your native-lib.so
+    }
+
+    public native float[] runInference(byte[] imageData);
+}
+AndroidManifest Permissions (if needed):
+xml
+Copy
+Edit
+<uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"/>
+📦 Step 4: Sample Android Project Structure
+bash
+Copy
+Edit
+/app
+ └── /jni
+       └── snpe_native.cpp
+       └── Android.mk (or CMakeLists.txt)
+ └── /assets
+       └── mobilenet_v2.dlc
+ └── MainActivity.java
