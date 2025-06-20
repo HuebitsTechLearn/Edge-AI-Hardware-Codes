@@ -1,0 +1,132 @@
+1. Example: Image Classification with Google Coral Dev Board (Python)
+
+This code demonstrates how to load a pre-compiled Edge TPU model and perform inference on an image.
+
+Prerequisites:
+
+Google Coral Dev Board set up: Follow Google's official guides to flash the OS and set up the development environment on your Coral Dev Board.
+Edge TPU Runtime: Install the Edge TPU runtime and the Python API on your Dev Board:
+Bash
+
+# Install the Edge TPU runtime
+echo "deb https://packages.cloud.google.com/apt coral-edgetpu-stable main" | sudo tee /etc/apt/sources.list.d/coral-edgetpu.list
+curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key add -
+sudo apt update
+sudo apt install libedgetpu1-std
+
+# Install the Edge TPU Python API (ensure you're in a virtual environment if desired)
+pip3 install --extra-index-url https://google-coral.github.io/py-repo/ pycoral
+pip3 install Pillow  # For image processing
+Edge TPU-compatible Model: You need a TensorFlow Lite model that has been compiled specifically for the Edge TPU (it will have a .tflite extension, but is optimized internally). You can get examples from Google's Coral models repository, e.g., mobilenet_v2_1.0_224_quant_edgetpu.tflite.
+Bash
+
+# Example to download a model (run this on your Dev Board)
+mkdir models
+cd models
+wget https://storage.googleapis.com/download.tensorflow.org/models/tflite/edgetpu/mobilenet_v2_1.0_224_quant_edgetpu.tflite
+wget https://storage.googleapis.com/download.tensorflow.org/models/tflite/edgetpu/imagenet_labels.txt
+Test Image: Have a sample image (e.g., test_image.jpg) in the same directory as your script.
+coral_inference_example.py
+
+Python
+
+import numpy as np
+from PIL import Image
+from pycoral.adapters import common
+from pycoral.adapters import classify
+from pycoral.utils.edgetpu import make_interpreter
+import time
+import os
+
+# --- Configuration ---
+# Adjust these paths if your model/labels/image are elsewhere
+MODEL_DIR = "./models" # Directory where you downloaded models
+MODEL_NAME = "mobilenet_v2_1.0_224_quant_edgetpu.tflite"
+LABELS_NAME = "imagenet_labels.txt"
+IMAGE_NAME = "test_image.jpg" # Make sure you have a test image, e.g., a photo of a cat
+
+MODEL_PATH = os.path.join(MODEL_DIR, MODEL_NAME)
+LABELS_PATH = os.path.join(MODEL_DIR, LABELS_NAME)
+IMAGE_PATH = os.path.join(MODEL_DIR, IMAGE_NAME) # Assuming test image is also in models dir
+
+
+# --- Load labels ---
+def load_labels(path):
+    with open(path, 'r') as f:
+        return {i: line.strip() for i, line in enumerate(f.readlines())}
+
+labels = load_labels(LABELS_PATH)
+
+# --- Load the Edge TPU model ---
+print(f"Loading model: {MODEL_PATH}")
+interpreter = make_interpreter(MODEL_PATH)
+interpreter.allocate_tensors()
+
+# Get input size and type
+_, input_height, input_width, _ = interpreter.get_input_details()[0]['shape']
+input_type = interpreter.get_input_details()[0]['dtype']
+
+print(f"Model input shape: ({input_height}, {input_width}), type: {input_type}")
+
+# --- Load and preprocess the image ---
+print(f"Loading and resizing image: {IMAGE_PATH}")
+img = Image.open(IMAGE_PATH).convert('RGB').resize((input_width, input_height), Image.Resampling.LANCZOS)
+input_data = np.asarray(img)
+
+# Models from TensorFlow Lite Model Maker or some others might expect normalized float data.
+# Standard Edge TPU classification models are often uint8.
+# Adjust preprocessing based on your specific model's input expectations.
+if input_type == np.float32:
+    input_data = (np.float32(input_data) - 127.5) / 127.5
+elif input_type == np.uint8:
+    pass # Already uint8
+else:
+    raise RuntimeError(f"Unexpected input type: {input_type}")
+
+
+# Add batch dimension
+input_data = np.expand_dims(input_data, axis=0)
+
+# Set the tensor
+common.set_input(interpreter, input_data)
+
+# --- Perform Inference ---
+print("Running inference...")
+start_time = time.monotonic()
+interpreter.invoke()
+end_time = time.monotonic()
+
+# --- Get results ---
+results = classify.get_scores(interpreter)
+top_k = classify.get_top_k(results, top_k=5) # Get top 5 predictions
+
+inference_time_ms = (end_time - start_time) * 1000
+print(f"Inference took: {inference_time_ms:.2f} ms")
+
+print("\n--- Top Predictions ---")
+for score, label_id in top_k:
+    print(f"{labels[label_id]}: {score:.4f}")
+
+How to run this code on your Coral Dev Board:
+
+SSH into your Coral Dev Board or work directly on it.
+Ensure prerequisites are met (OS flashed, runtime/pycoral installed, model/labels/image downloaded).
+Save the code above as coral_inference_example.py.
+Execute:
+Bash
+
+python3 coral_inference_example.py
+You should see output similar to this (depending on your test_image.jpg):
+
+Loading model: ./models/mobilenet_v2_1.0_224_quant_edgetpu.tflite
+Model input shape: (224, 224), type: <class 'numpy.uint8'>
+Loading and resizing image: ./models/test_image.jpg
+Running inference...
+Inference took: 8.56 ms
+
+--- Top Predictions ---
+tiger cat: 0.8872
+tabby cat: 0.0898
+Egyptian cat: 0.0166
+lynx: 0.0019
+jaguar: 0.0006
