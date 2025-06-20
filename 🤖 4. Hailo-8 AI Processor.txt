@@ -1,0 +1,140 @@
+Here's an example using the HailoRT Python API to perform image classification.
+
+1. Example: Image Classification with Hailo-8 AI Processor (Python)
+
+This code demonstrates how to load a Hailo-compiled model and perform inference on an image.
+
+Prerequisites:
+
+Hailo-8 AI Processor Hardware: You need a system with a Hailo-8 module (e.g., M.2, PCIe card) properly installed and configured.
+Hailo TAPPAS Toolkit / HailoRT SDK: You must have the Hailo TAPPAS Toolkit installed on your development machine (for model compilation) and the HailoRT SDK installed on your host system with the Hailo-8.
+Installation is highly specific to the Hailo platform and often involves a custom installer or package manager provided by Hailo, along with device drivers. You'll need to follow Hailo's official documentation for this.
+Hailo-Compiled Model (.hef file): You need a neural network model that has been pre-compiled for the Hailo-8. This typically involves:
+Training your model (e.g., MobileNetV2) in TensorFlow, PyTorch, or ONNX.
+Using the Hailo TAPPAS Toolkit's hailo_model_zoo or hailo.ai.compiler to compile your model into a .hef (Hailo Executable Format) file. This step performs quantization (usually INT8) and optimization for the Hailo-8's architecture.
+Bash
+
+# Conceptual command to compile a model using Hailo's tools
+# (Exact command depends on your SDK version and model source)
+# Assuming you have a TensorFlow saved model:
+# hailo_model_zoo download mobilenet_v2
+# hailo_model_zoo compile mobilenet_v2 --target=hailo8 --quantization=full --output mobilenet_v2_hailo8.hef
+Labels File: For classification, you'll need a .txt file containing the class labels (e.g., ImageNet labels).
+Test Image: Have a sample image (e.g., cat.jpg) for inference.
+hailo_inference_example.py
+
+Python
+
+import hailo_platform.pyhailo as hailo
+import numpy as np
+from PIL import Image
+import time
+import os
+
+# --- Configuration ---
+# Adjust these paths to your Hailo-compiled model and labels
+HAILE_HEF_PATH = "mobilenet_v2_hailo8.hef" # Path to your compiled .hef file
+LABELS_PATH = "imagenet_labels.txt"     # Path to your ImageNet labels file
+IMAGE_PATH = "cat.jpg"                   # Path to a test image (e.g., a photo of a cat)
+
+# --- Load labels ---
+def load_labels(path):
+    with open(path, 'r') as f:
+        return [line.strip() for line in f.readlines()]
+
+labels = load_labels(LABELS_PATH)
+
+# --- Initialize Hailo device and load HEF ---
+print(f"Initializing Hailo device and loading HEF: {HAILE_HEF_PATH}...")
+try:
+    # Get a list of available Hailo devices and connect to the first one
+    hailo_devices = hailo.HwInfer.get_available_devices()
+    if not hailo_devices:
+        print("Error: No Hailo devices found. Ensure the Hailo-8 is properly installed and drivers are loaded.")
+        exit(1)
+    
+    # Connect to the first available Hailo device
+    hailo_infer = hailo.HwInfer(hailo_devices[0])
+    
+    # Load the compiled HEF model onto the device
+    network_group = hailo_infer.configure(HAILE_HEF_PATH)
+    
+    # Get the input/output network groups (assuming one primary network group)
+    network_group_handle = network_group[0] # Get the first (and usually only) network group
+    
+    # Get input and output stream info
+    input_stream_info = network_group_handle.get_input_streams_info()[0] # Assuming one input
+    output_stream_info = network_group_handle.get_output_streams_info()[0] # Assuming one output
+    
+    input_shape = input_stream_info.shape
+    # Note: input_shape from Hailo will be (channels, height, width)
+    # The first dim might be 1 if batch size is fixed to 1. We need H, W for image resize.
+    model_height = input_shape[1]
+    model_width = input_shape[2]
+    
+    print(f"Model input shape: {input_shape} (CHW)")
+
+except Exception as e:
+    print(f"Failed to initialize Hailo device or load HEF: {e}")
+    print("Please ensure HailoRT SDK is correctly installed and HEF file is valid.")
+    exit(1)
+
+# --- Load and preprocess the image ---
+print(f"Loading and resizing image: {IMAGE_PATH}")
+img = Image.open(IMAGE_PATH).convert('RGB') # Ensure RGB format
+img = img.resize((model_width, model_height), Image.Resampling.LANCZOS)
+
+# Convert to numpy array
+input_data = np.asarray(img)
+
+# Hailo models typically expect CHW (channels, height, width) and uint8 or int8.
+# Most image libraries give HWC (height, width, channels). Transpose if needed.
+input_data = input_data.transpose((2, 0, 1)) # HWC to CHW
+
+# Hailo's quantized models expect specific input ranges, often [0, 255] for uint8.
+# Check your model's compilation details for exact requirements.
+# If the model was compiled with mean/std normalization, you'd apply it here.
+# For simplicity with typical uint8 models:
+input_data = input_data.astype(np.uint8) # Ensure it's uint8
+
+# Add batch dimension if necessary (if model expects NCHW and batch is 1)
+# The input_stream_info.shape should tell you if it expects a batch dim.
+# If input_shape[0] is not 1, you might need: input_data = np.expand_dims(input_data, axis=0)
+
+
+# --- Create input/output buffers ---
+# Hailo typically uses continuous memory for efficient transfers
+input_buffer = hailo.InferVStream.create_input_vstream(network_group_handle, 'input_layer_name_0', input_data.shape) # 'input_layer_name_0' needs to match your model's actual input layer name. Check HEF with hailo_model_zoo info.
+output_buffer = hailo.InferVStream.create_output_vstream(network_group_handle, 'output_layer_name_0', output_stream_info.shape) # 'output_layer_name_0' needs to match actual output layer name.
+
+# It's more common to use InferVStreams directly for simplicity
+# This creates a dataflow pipe to the device
+input_vstream = hailo.InferVStream(network_group_handle, input_stream_info.name)
+output_vstream = hailo.InferVStream(network_group_handle, output_stream_info.name)
+
+# --- Perform Inference ---
+print("Running inference...")
+start_time = time.monotonic()
+
+# Write input to the input stream
+input_vstream.write(input_data)
+
+# Read output from the output stream
+output_data = output_vstream.read()
+
+end_time = time.monotonic()
+
+inference_time_ms = (end_time - start_time) * 1000
+print(f"Inference took: {inference_time_ms:.2f} ms")
+
+# --- Process results ---
+# Output is usually a numpy array. For classification, it's typically logits or probabilities.
+# If it's logits, apply softmax to get probabilities
+output_flat = output_data.flatten() # Flatten the output array
+softmax_output = np.exp(output_flat) / np.sum(np.exp(output_flat))
+
+top_k_indices = np.argsort(softmax_output)[::-1][:5] # Get top 5 indices
+
+print("\n--- Top Predictions ---")
+for i in top_k_indices:
+    print(f"{labels[i]}: {softmax_output[i]:.4f}")
