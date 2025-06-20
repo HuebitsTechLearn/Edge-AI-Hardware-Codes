@@ -1,0 +1,87 @@
+⚙️ Step 1: Install LEIP SDK (Python CLI)
+bash
+Copy
+Edit
+pip install latentai-leip
+If you're a registered LatentAI partner, you'll use their private SDK repo or prebuilt CLI .whl installer — request via latentai.com/contact
+
+📊 Step 2: Profile Your Model
+✅ Example: Profiling a MobileNetV2 ONNX Model
+bash
+Copy
+Edit
+leip profile \
+  --model mobilenetv2.onnx \
+  --data-dir ./calibration_data/ \
+  --input-shape "1,3,224,224"
+You’ll get:
+
+Latency report
+
+Memory usage
+
+Operator fusion stats
+
+Edge readiness score (🔥)
+
+🧬 Step 3: Optimize and Quantize
+✅ Example: Static Quantization
+bash
+Copy
+Edit
+leip optimize \
+  --model mobilenetv2.onnx \
+  --quantization static \
+  --target cortex-m \
+  --data-dir ./calibration_data/ \
+  --output optimized_model.onnx
+✅ For dynamic quantization:
+bash
+Copy
+Edit
+leip optimize \
+  --model resnet18.onnx \
+  --quantization dynamic \
+  --target x86 \
+  --output optimized_resnet18.onnx
+🚀 Step 4: Deploy to Edge Hardware
+✅ Deployment for Cortex-M (e.g., STM32, Arduino Portenta):
+bash
+Copy
+Edit
+leip deploy \
+  --model optimized_model.onnx \
+  --target cortex-m \
+  --format c_array \
+  --output-dir ./deploy_model/
+Outputs a model.h and model.c for embedded deployment. Plug it into your embedded C++ project.
+
+🧠 Step 5: Inference Runtime (Python)
+If you're testing optimized ONNX locally:
+
+python
+Copy
+Edit
+import onnxruntime as ort
+import numpy as np
+
+session = ort.InferenceSession("optimized_model.onnx")
+input_name = session.get_inputs()[0].name
+
+input_data = np.random.randn(1, 3, 224, 224).astype(np.float32)
+result = session.run(None, {input_name: input_data})
+
+print("Output:", result)
+📦 Project Structure Example
+bash
+Copy
+Edit
+/project
+ ├── model.onnx
+ ├── calibration_data/
+ ├── optimized_model.onnx
+ ├── deploy_model/
+ │   └── model.c
+ │   └── model.h
+ ├── profile_report.json
+ └── test_inference.py
