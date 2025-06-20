@@ -1,0 +1,206 @@
+1. Example: Real-time Object Detection with Myriad X / Intel Movidius (Python)
+
+This code demonstrates how to capture video from a USB camera, load an OpenVINO-optimized object detection model, and perform real-time inference on the Myriad X VPU (via NCS2 or any board with an embedded Myriad X).
+
+Prerequisites:
+
+Intel Myriad X VPU device: This could be an Intel Neural Compute Stick 2 (NCS2) plugged into your host's USB 3.0 port, or a development board with an embedded Myriad X.
+Host System: A PC, Raspberry Pi, or another embedded system running Linux (recommended for camera access and OpenVINO setup).
+OpenVINO Toolkit Installation:
+Install the OpenVINO Toolkit on your host system.
+Crucially: Follow the official Intel documentation to set up the environment, including running setupvars.sh (Linux) and configuring udev rules for your VPU device.
+OpenVINO Pre-trained Model: Download a pre-trained and OpenVINO-optimized object detection model from the OpenVINO Model Zoo. A good choice is ssd_mobilenet_v2_coco.
+You'll need the .xml (model architecture) and .bin (model weights) files.
+Model Downloader:
+Bash
+
+# Navigate to the OpenVINO tools directory
+cd /opt/intel/openvino/tools/model_downloader/
+# Download ssd_mobilenet_v2_coco (IR version 11 for recent OpenVINO)
+python3 downloader.py --name ssd_mobilenet_v2_coco -o ~/openvino_models/
+(Adjust path /opt/intel/openvino based on your installation.)
+Labels File: For object detection, you'll need a .txt file containing the class labels (e.g., COCO dataset labels).
+Bash
+
+# You might find this in the OpenVINO samples or download it separately
+wget https://raw.githubusercontent.com/opencv/opencv/master/data/dnn/COCO.names -O ~/openvino_models/coco_labels.txt
+USB Camera: A connected USB webcam (usually /dev/video0).
+OpenCV Python bindings: pip install opencv-python
+myriad_x_object_detection.py
+
+Python
+
+import cv2
+import numpy as np
+from openvino.runtime import Core, Tensor
+import time
+import os
+
+# --- Configuration ---
+MODEL_DIR = os.path.expanduser("~/openvino_models/public/ssd_mobilenet_v2_coco/FP16/") # Adjust path
+MODEL_XML_PATH = os.path.join(MODEL_DIR, "ssd_mobilenet_v2_coco.xml")
+MODEL_BIN_PATH = os.path.join(MODEL_DIR, "ssd_mobilenet_v2_coco.bin")
+LABELS_PATH = os.path.expanduser("~/openvino_models/coco_labels.txt")
+
+# Desired device for inference (e.g., "CPU", "GPU", "MYRIAD" for NCS2/Myriad X)
+DEVICE = "MYRIAD"
+
+# Camera settings
+CAMERA_INDEX = 0 # Usually 0 for the first USB camera
+FRAME_WIDTH = 640
+FRAME_HEIGHT = 480
+CONFIDENCE_THRESHOLD = 0.5 # Minimum confidence to display a detection
+
+# --- Load labels ---
+def load_labels(path):
+    with open(path, 'r') as f:
+        return [line.strip() for line in f.readlines()]
+
+labels = load_labels(LABELS_PATH)
+
+# --- Load the OpenVINO Runtime ---
+ie = Core()
+
+# Check if the device is available
+if DEVICE not in ie.available_devices:
+    print(f"Error: Device '{DEVICE}' not available. Available devices: {ie.available_devices}")
+    print("Please ensure your Myriad X device (e.g., NCS2) is plugged in and OpenVINO is correctly installed with udev rules.")
+    exit(1)
+
+print(f"Loading model on {DEVICE}...")
+try:
+    # Read the network and weights from the .xml and .bin files
+    model = ie.read_model(model=MODEL_XML_PATH, weights=MODEL_BIN_PATH)
+
+    # Compile the model for the specified device
+    compiled_model = ie.compile_model(model=model, device_name=DEVICE)
+
+    # Get input and output layers
+    input_layer = compiled_model.input(0)
+    output_layer = compiled_model.output(0)
+
+    # Get model's expected input shape and type
+    N, C, H, W = input_layer.shape # N=batch, C=channels, H=height, W=width
+    input_dtype = input_layer.element_type
+    print(f"Model expects input shape: ({N}, {C}, {H}, {W}), type: {input_dtype}")
+
+except Exception as e:
+    print(f"Error loading or compiling model: {e}")
+    exit(1)
+
+# --- Initialize Camera ---
+cap = cv2.VideoCapture(CAMERA_INDEX)
+if not cap.isOpened():
+    print(f"Error: Could not open camera at index {CAMERA_INDEX}")
+    exit(1)
+
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
+
+print(f"Camera opened: {FRAME_WIDTH}x{FRAME_HEIGHT}")
+
+# --- Main loop for inference ---
+print("Starting real-time inference. Press 'q' to quit.")
+try:
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            print("Failed to grab frame, exiting...")
+            break
+
+        # Preprocess frame for model input
+        # Resize to model's expected input size
+        input_frame = cv2.resize(frame, (W, H))
+        # Convert to RGB (OpenVINO models often expect RGB) - OpenCV reads BGR by default
+        input_frame = cv2.cvtColor(input_frame, cv2.COLOR_BGR2RGB)
+        # Reshape to NCHW (batch, channels, height, width)
+        input_frame = input_frame.transpose((2, 0, 1)) # HWC to CHW
+        input_frame = np.expand_dims(input_frame, axis=0) # Add batch dim: 1xCxHxW
+
+        # Ensure correct data type (e.g., float32 for FP16 models, uint8 for quantized)
+        if input_dtype.name == 'f32': # Floating point model (FP16 from model zoo is internally handled as float32)
+            input_frame = input_frame.astype(np.float32)
+            # Models might expect normalization [0, 1] or [-1, 1]
+            input_frame /= 255.0 # Normalize to [0, 1]
+        elif input_dtype.name == 'u8': # Quantized model
+            input_frame = input_frame.astype(np.uint8)
+        else:
+            print(f"Warning: Unexpected input data type: {input_dtype}. Ensure correct preprocessing.")
+
+        # Create an inference request
+        infer_request = compiled_model.create_infer_request()
+
+        start_time = time.monotonic()
+        # Set input tensor and perform inference
+        infer_request.set_input_tensor(Tensor(input_frame))
+        infer_request.infer()
+        end_time = time.monotonic()
+
+        output_data = infer_request.get_output_tensor(output_layer.index).data
+        # SSD output format is typically [1, 1, N, 7] where N is number of detections and 7 includes:
+        # [image_id, label, confidence, x_min, y_min, x_max, y_max]
+
+        # Draw bounding boxes
+        frame_display = frame.copy()
+        current_detections = 0
+        for detection in output_data[0][0]: # Access the actual detections
+            confidence = float(detection[2])
+            if confidence > CONFIDENCE_THRESHOLD:
+                current_detections += 1
+                label_id = int(detection[1])
+                x_min = int(detection[3] * FRAME_WIDTH)
+                y_min = int(detection[4] * FRAME_HEIGHT)
+                x_max = int(detection[5] * FRAME_WIDTH)
+                y_max = int(detection[6] * FRAME_HEIGHT)
+
+                # Clamp coordinates to frame dimensions
+                x_min = max(0, x_min)
+                y_min = max(0, y_min)
+                x_max = min(FRAME_WIDTH - 1, x_max)
+                y_max = min(FRAME_HEIGHT - 1, y_max)
+
+                color = (0, 255, 0) # Green BGR
+                cv2.rectangle(frame_display, (x_min, y_min), (x_max, y_max), color, 2)
+                
+                label_text = f"{labels[label_id]}: {confidence:.2f}"
+                cv2.putText(frame_display, label_text, (x_min, y_min - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
+        
+        inference_time_ms = (end_time - start_time) * 1000
+        fps = 1000 / inference_time_ms if inference_time_ms > 0 else 0
+
+        info_text = f"FPS: {fps:.2f} | Detections: {current_detections} | Latency: {inference_time_ms:.2f}ms"
+        cv2.putText(frame_display, info_text, (10, 20),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
+
+
+        cv2.imshow("Myriad X Object Detection", frame_display)
+
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+except KeyboardInterrupt:
+    print("\nExiting program.")
+except Exception as e:
+    print(f"An error occurred: {e}")
+finally:
+    cap.release()
+    cv2.destroyAllWindows()
+    print("Camera released and windows closed.")
+
+How to run this code on your host system with Myriad X / NCS2:
+
+Ensure your Myriad X device (e.g., NCS2) is plugged in.
+Install OpenVINO Toolkit on your host. Crucially, source the setupvars.sh script (or equivalent for your OS) in your terminal session before running the script:
+Bash
+
+source /opt/intel/openvino/setupvars.sh
+# Or, if you installed system-wide, it might be in your PATH already.
+Install OpenCV Python bindings: pip install opencv-python
+Download Model and Labels: Use the OpenVINO downloader.py script to get ssd_mobilenet_v2_coco (choose FP16 version from the public folder) and download COCO.names as described in the prerequisites. Adjust MODEL_DIR and LABELS_PATH in the script if you placed them elsewhere.
+Save the code as myriad_x_object_detection.py.
+Run:
+Bash
+
+python3 myriad_x_object_detection.py
+A window showing your camera feed with real-time object detections should appear. Press 'q' to quit.
