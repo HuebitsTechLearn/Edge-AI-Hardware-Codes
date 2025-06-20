@@ -1,0 +1,137 @@
+⚙️ Step 1: Train + Compile Model with SageMaker Neo
+Train a model using SageMaker, then compile it to be optimized for the specific edge device (e.g., x86 or ARM64).
+
+🧠 Example: Compile a model for edge
+python
+Copy
+Edit
+import sagemaker
+from sagemaker import get_execution_role
+from sagemaker.tensorflow import TensorFlowModel
+from sagemaker.model import Model
+from sagemaker.predictor import Predictor
+
+role = get_execution_role()
+
+# Compile with Neo
+from sagemaker.neo import CompiledModel
+
+compiled_model = CompiledModel(
+    model_data="s3://your-bucket/model.tar.gz",
+    framework="tensorflow",
+    role=role,
+    target_instance_family="ml_c5",  # for x86 Snowcone
+    sagemaker_session=sagemaker.Session()
+)
+
+compiled_model.compile_model(
+    target_instance_family="ml_c5",
+    input_shape={"input": [1, 224, 224, 3]},
+    output_path="s3://your-bucket/compiled/"
+)
+🧪 Step 2: Dockerfile for Edge Inference (Greengrass Component)
+Now let’s create the Docker container that will run this model on the Snowcone device using Greengrass.
+
+📦 Dockerfile:
+dockerfile
+Copy
+Edit
+FROM ubuntu:20.04
+
+RUN apt-get update && apt-get install -y \
+    python3-pip \
+    curl \
+    unzip \
+    libglib2.0-0
+
+COPY requirements.txt /app/requirements.txt
+RUN pip3 install -r /app/requirements.txt
+
+COPY app.py /app/app.py
+COPY model /app/model
+
+WORKDIR /app
+
+CMD ["python3", "app.py"]
+📄 requirements.txt:
+nginx
+Copy
+Edit
+numpy
+tensorflow-lite
+flask  # Optional: for local API on device
+🧠 app.py (TFLite inference logic):
+python
+Copy
+Edit
+import tensorflow as tf
+import numpy as np
+
+interpreter = tf.lite.Interpreter(model_path="model.tflite")
+interpreter.allocate_tensors()
+
+input_details = interpreter.get_input_details()
+output_details = interpreter.get_output_details()
+
+def run_inference(image_array):
+    input_data = np.array(image_array, dtype=np.float32)
+    interpreter.set_tensor(input_details[0]['index'], input_data)
+    interpreter.invoke()
+    return interpreter.get_tensor(output_details[0]['index'])
+🛰️ Step 3: Deploy to Snowcone via Greengrass
+Snowcone runs Greengrass v2, which supports Docker containers as components.
+
+🔧 Component recipe (recipe.json):
+json
+Copy
+Edit
+{
+  "RecipeFormatVersion": "2020-01-25",
+  "ComponentName": "com.yourcompany.edgeai.inference",
+  "ComponentVersion": "1.0.0",
+  "ComponentType": "aws.greengrass.generic",
+  "ComponentConfiguration": {
+    "DefaultConfiguration": {}
+  },
+  "Manifests": [
+    {
+      "Platform": { "os": "linux" },
+      "Lifecycle": {
+        "Run": "docker run your-docker-image-name"
+      }
+    }
+  ]
+}
+Use the Greengrass CLI or console to deploy this component to the Snowcone device.
+
+🧩 Step 4: Greengrass Deployment
+Install Greengrass CLI on the device and deploy:
+
+bash
+Copy
+Edit
+sudo ./greengrass-cli deployment create \
+    --recipe recipe.json \
+    --artifact ./artifacts \
+    --name edgeai-inference-deploy
+🔐 Optional: Lambda Inference for Real-Time Triggers
+Snowcone can also run AWS Lambda functions locally using Greengrass.
+
+🧠 Example Lambda (lambda_function.py):
+python
+Copy
+Edit
+import json
+import tflite_runtime.interpreter as tflite
+import numpy as np
+
+interpreter = tflite.Interpreter(model_path="/lambda/model.tflite")
+interpreter.allocate_tensors()
+
+def lambda_handler(event, context):
+    input_data = np.array(event["data"], dtype=np.float32)
+    interpreter.set_tensor(0, input_data)
+    interpreter.invoke()
+    output = interpreter.get_tensor(0)
+    return {"result": output.tolist()}
+Deploy this function as a Greengrass Lambda Component or via container.
