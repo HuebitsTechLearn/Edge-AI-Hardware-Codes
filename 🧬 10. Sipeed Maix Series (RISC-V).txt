@@ -1,0 +1,102 @@
+🧠 1. MaixPy (MicroPython for AI on Sipeed)
+Perfect for prototyping with K210 (Kendryte 210) chips — like on Maix Bit, Maix Dock, Maixduino.
+
+🔧 Setup:
+Flash the board with MaixPy firmware
+👉 Use Kflash (GUI or CLI) to upload firmware.
+
+✅ Face Detection Example (Haar Cascade)
+python
+Copy
+Edit
+import sensor, image, lcd, time
+
+lcd.init()                         # Init LCD display
+sensor.reset()
+sensor.set_pixformat(sensor.RGB565)
+sensor.set_framesize(sensor.QVGA)
+sensor.skip_frames(time=2000)
+
+face_cascade = image.HaarCascade("frontalface", stages=25)
+
+while(True):
+    img = sensor.snapshot()
+    faces = img.find_features(face_cascade, threshold=0.75, scale=1.5)
+    for f in faces:
+        img.draw_rectangle(f)
+    lcd.display(img)
+✅ YOLO Object Detection on KPU
+python
+Copy
+Edit
+import sensor, image, lcd, KPU as kpu
+
+lcd.init()
+sensor.reset()
+sensor.set_pixformat(sensor.RGB565)
+sensor.set_framesize(sensor.QVGA)
+sensor.skip_frames(time=2000)
+
+task = kpu.load(0x300000)  # Load pre-compiled .kmodel to flash address
+
+labels = ["person", "car", "dog"]
+
+while(True):
+    img = sensor.snapshot()
+    objects = kpu.run_yolo2(task, img)
+    if objects:
+        for obj in objects:
+            img.draw_rectangle(obj.rect())
+            img.draw_string(obj.x(), obj.y(), labels[obj.classid()])
+    lcd.display(img)
+
+kpu.deinit(task)
+🧠 .kmodel = KPU-compiled neural network model (from MobileNet, YOLOv2 etc.)
+
+🧬 2. C/C++ SDK (Advanced Low-Level Control)
+For devs who want to go full metal and use Kendryte SDK for production-grade control
+
+⚙️ Install toolchain (Linux/macOS):
+bash
+Copy
+Edit
+git clone https://github.com/kendryte/kendryte-gnu-toolchain
+cd kendryte-gnu-toolchain
+./kendryte-gnu-toolchain/build-toolchain.sh
+✅ Minimal Inference Code (C)
+c
+Copy
+Edit
+#include "kpu.h"
+
+kpu_task_t task;
+kpu_load_kmodel(&task, model_data);
+
+while(1) {
+    get_image_data(sensor_data);
+    kpu_run_kmodel(&task, sensor_data, output_buffer);
+    parse_output(output_buffer);
+}
+💡 You'll link this with Kendryte KPU HAL drivers and use kendryte-standalone-sdk.
+
+🧰 Model Conversion Workflow:
+Train in TensorFlow/PyTorch → Export to ONNX → Convert to .kmodel using NNCase
+
+bash
+Copy
+Edit
+nncase compile \
+    --input model.onnx \
+    --dataset images/ \
+    --output model.kmodel
+Download NNCase: https://github.com/kendryte/nncase
+
+📦 Project Structure
+css
+Copy
+Edit
+/project
+ ├── main.py or main.c
+ ├── model.kmodel
+ ├── flash_tool/
+ └── sdk/ (if using C)
