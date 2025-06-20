@@ -1,0 +1,153 @@
+Model Downloader: OpenVINO provides a convenient Model Downloader script:
+Bash
+
+# Navigate to the OpenVINO tools directory
+cd /opt/intel/openvino/tools/model_downloader/
+# Download googlenet-v2 (IR version 11 for recent OpenVINO)
+python3 downloader.py --name googlenet-v2 -o ~/openvino_models/
+(Adjust path /opt/intel/openvino based on your installation.)
+Labels File: For classification, you'll need a .txt file containing the class labels (e.g., ImageNet labels).
+Bash
+
+# You might find this in the OpenVINO samples or download it separately
+wget https://raw.githubusercontent.com/opencv/opencv_extra/master/testdata/dnn/classification_classes_ILSVRC2012.txt -O ~/openvino_models/imagenet_labels.txt
+Test Image: Have a sample image (e.g., dog.jpg) in your working directory.
+ncs2_inference_example.py
+
+Python
+
+import cv2
+import numpy as np
+from openvino.runtime import Core, Tensor
+import time
+import os
+
+# --- Configuration ---
+MODEL_DIR = os.path.expanduser("~/openvino_models/public/googlenet-v2/FP16/") # Adjust path to your downloaded model's FP16 dir
+MODEL_XML_PATH = os.path.join(MODEL_DIR, "googlenet-v2.xml")
+MODEL_BIN_PATH = os.path.join(MODEL_DIR, "googlenet-v2.bin")
+LABELS_PATH = os.path.expanduser("~/openvino_models/imagenet_labels.txt")
+IMAGE_PATH = "dog.jpg" # Make sure you have a test image, e.g., a photo of a dog or cat
+
+# Desired device for inference (e.g., "CPU", "GPU", "MYRIAD" for NCS2)
+DEVICE = "MYRIAD" # This targets the Intel Neural Compute Stick 2
+
+# --- Load labels ---
+def load_labels(path):
+    with open(path, 'r') as f:
+        return [line.strip() for line in f.readlines()]
+
+labels = load_labels(LABELS_PATH)
+
+# --- Load the OpenVINO Runtime ---
+ie = Core()
+
+# Check if the device is available
+if DEVICE not in ie.available_devices:
+    print(f"Error: Device '{DEVICE}' not available. Available devices: {ie.available_devices}")
+    print("Please ensure your NCS2 is plugged in and OpenVINO is correctly installed with udev rules.")
+    exit(1)
+
+print(f"Loading model on {DEVICE}...")
+# Read the network and weights from the .xml and .bin files
+model = ie.read_model(model=MODEL_XML_PATH, weights=MODEL_BIN_PATH)
+
+# Compile the model for the specified device
+compiled_model = ie.compile_model(model=model, device_name=DEVICE)
+
+# Get input and output layers
+input_layer = compiled_model.input(0)
+output_layer = compiled_model.output(0)
+
+# Get input shape and type
+input_height = input_layer.shape[2]
+input_width = input_layer.shape[3]
+input_dtype = input_layer.element_type
+
+print(f"Model input shape: ({input_height}, {input_width}), type: {input_dtype}")
+
+# --- Load and preprocess the image ---
+print(f"Loading and preprocessing image: {IMAGE_PATH}")
+image = cv2.imread(IMAGE_PATH)
+if image is None:
+    print(f"Error: Could not load image from {IMAGE_PATH}")
+    exit(1)
+
+# Resize to model's input size
+resized_image = cv2.resize(image, (input_width, input_height))
+
+# Convert to RGB (OpenVINO models often expect RGB) and reshape to NCHW (batch, channels, height, width)
+# Myriad devices typically prefer NCHW layout for performance.
+input_data = resized_image.transpose((2, 0, 1)) # HWC to CHW
+input_data = np.expand_dims(input_data, axis=0) # Add batch dimension: 1xCxHxW
+
+# Ensure correct data type (e.g., float32 for FP16 models, uint8 for quantized)
+if input_dtype.name == 'f32': # Floating point model (FP16 from model zoo is internally handled as float32)
+    input_data = input_data.astype(np.float32)
+    # Models often expect normalized input [0, 1] or [-1, 1] - check model documentation
+    # For googlenet-v2, it's typically [0, 255] or mean subtraction
+    # If your model requires normalization, add it here, e.g., input_data /= 255.0
+elif input_dtype.name == 'u8': # Quantized model
+    input_data = input_data.astype(np.uint8)
+else:
+    print(f"Warning: Unexpected input data type: {input_dtype}. Ensure correct preprocessing.")
+
+
+# Create an inference request
+infer_request = compiled_model.create_infer_request()
+
+# --- Perform Inference ---
+print("Running inference...")
+start_time = time.monotonic()
+# Set input tensor and perform inference
+infer_request.set_input_tensor(Tensor(input_data))
+infer_request.infer()
+end_time = time.monotonic()
+
+# Get the output tensor
+output = infer_request.get_output_tensor(output_layer.index).data
+
+inference_time_ms = (end_time - start_time) * 1000
+print(f"Inference took: {inference_time_ms:.2f} ms")
+
+# --- Process results ---
+# Output is usually a 1D array of probabilities/logits
+# Apply softmax if the model outputs logits (googlenet-v2 typically does)
+# For classification, find the top prediction
+softmax_output = np.exp(output[0]) / np.sum(np.exp(output[0]))
+top_k_indices = np.argsort(softmax_output)[::-1][:5] # Get top 5 indices
+
+print("\n--- Top Predictions ---")
+for i in top_k_indices:
+    print(f"{labels[i]}: {softmax_output[i]:.4f}")
+
+How to run this code on your host system with NCS2:
+
+Ensure NCS2 is plugged in.
+Install OpenVINO Toolkit on your host (Linux, Windows, macOS). Crucially, run the post-installation setup scripts that set up environment variables (like setupvars.sh on Linux) and udev rules for the NCS2.
+Install OpenCV Python bindings: pip install opencv-python
+Download Model and Labels: Use the downloader.py script from OpenVINO to get googlenet-v2 (select FP16 for this example) and download the ImageNet labels file as described in the prerequisites. Adjust MODEL_DIR and LABELS_PATH in the script if you placed them elsewhere.
+Get a Test Image: Place dog.jpg (or any .jpg image) in the same directory as your Python script.
+Save the code as ncs2_inference_example.py.
+Run:
+Bash
+
+# Source the setupvars.sh script (crucial for OpenVINO environment)
+source /opt/intel/openvino/setupvars.sh
+# Or for a system-wide install, it might be in your PATH already.
+
+python3 ncs2_inference_example.py
+You should see output similar to this (depending on your dog.jpg):
+
+Loading model on MYRIAD...
+Model input shape: (224, 224), type: <element_type.f32: 1>
+Loading and preprocessing image: dog.jpg
+Running inference...
+Inference took: 25.12 ms
+
+--- Top Predictions ---
+golden retriever: 0.8541
+Labrador retriever: 0.0892
+corgi: 0.0123
+Siberian husky: 0.0058
+chow: 0.0039
